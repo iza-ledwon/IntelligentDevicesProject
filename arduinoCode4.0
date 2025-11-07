@@ -1,0 +1,254 @@
+#include <Wire.h>
+#include "rgb_lcd.h"
+#include "DFRobot_Heartrate.h"
+
+#include <SPI.h>
+#include <WiFiNINA.h>
+
+#include <ArduinoHttpClient.h>
+
+#define heartratePin A1
+DFRobot_Heartrate heartrate(DIGITAL_MODE);
+
+rgb_lcd lcd;
+
+char ssid[] = "iPhone (Iza)";
+char pass[] = "lalala678";
+
+int status = WL_IDLE_STATUS;
+
+class HRData {
+    public:
+        int     id;
+        String  device_id;
+        String  user_id;
+        String  caretaker_id;
+        int     value;
+        String  type;
+        String  date_time;
+        String  description;
+        
+        HRData() {
+            device_id = "device_xx";
+            user_id = "user_yy";
+            caretaker_id = "ct_zz";
+            value = 0;
+            type = "some_type";
+            date_time = "2021-01-01T12:00:00Z";
+            description = "descr";
+        }
+        
+        String toJSON() {
+            String json = "{";
+            json += "\"device_id\": \"" + String(device_id) + "\",";
+            json += "\"user_id\": \"" + String(user_id) + "\",";
+            json += "\"caretaker_id\": \"" + String(caretaker_id) + "\",";
+            json += "\"value\": " + String(value) + ",";
+            json += "\"type\": \"" + String(type) + "\",";
+            json += "\"date_time\": \"" + String(date_time) + "\",";
+            json += "\"description\": \"" + String(description) + "\"";
+            json += "}";
+            return json;
+        }
+};
+
+HRData myHRData;
+
+String myReq = "";
+
+IPAddress server(172,20,10,2);
+WiFiClient client;
+HttpClient client2 = HttpClient(client, server, 8080);
+
+
+void setup() {
+  randomSeed(micros());
+  lcd.begin(16, 2);
+  Serial.begin(9600);
+
+  // WiFi connection (changed example from library)  
+  if (WiFi.status() == WL_NO_MODULE) {
+
+    Serial.println("Communication with WiFi module failed!");
+
+    // don't continue
+
+    while (true);
+
+  }
+
+  String fv = WiFi.firmwareVersion();
+
+  if (fv < WIFI_FIRMWARE_LATEST_VERSION) {
+
+    Serial.println("Please upgrade the firmware");
+
+  }
+
+  // attempt to connect to Wifi network:
+
+  while (status != WL_CONNECTED) {
+
+    Serial.print("Attempting to connect to SSID: ");
+
+    Serial.println(ssid);
+
+    // Connect to WPA/WPA2 network. Change this line if using open or WEP network:
+
+    status = WiFi.begin(ssid, pass);
+
+    // wait 10 seconds for connection:
+
+    delay(10000);
+
+  }
+
+  Serial.println("Connected to wifi");
+
+  printWifiStatus();
+
+  Serial.println("\nStarting connection to server...");
+
+  // if you get a connection, report back via serial:
+
+  if (client.connect(server, 8080)) {
+
+    Serial.println("connected to server");
+
+  }
+}
+
+const int bufferSize = 2;
+uint8_t HRValuesBuffer[bufferSize];
+int     bufferIndex = 0;
+uint8_t lastHRValue = 58;
+int     readsCounter = 0;
+
+void loop() {
+  lcd.setCursor(0,0);
+ 
+  uint8_t rateValue = readHRValue();
+
+  if (rateValue){
+    processHRValue(rateValue);
+
+    if (readsCounter > bufferSize) {
+        rateValue = averageHRValue();
+    } else {
+        rateValue = lastHRValue;
+    }
+  
+  Serial.print(rateValue);
+  Serial.print(" ");
+  Serial.println(lastHRValue);
+  // Serial.println(ReadsCounter);
+    lcd.clear();
+    lcd.print(rateValue);
+  }
+
+  myHRData.value = rateValue;
+  myReq = myHRData.toJSON();
+
+  //Serial.println(myReq);
+  sendPostReq(myReq);
+  delay(100);
+
+  lcd.setCursor(0,2);
+  String alert = getAlert();
+  printAlert(alert);
+
+  delay(10000);
+ // if the server's disconnected, stop the client:
+
+  // if (!client.connected()) {
+
+  //   Serial.println();
+
+  //   Serial.println("disconnecting from server.");
+
+  //   client.stop();
+
+  //   // do nothing forevermore:
+
+  //   while (true);
+
+  // }
+
+}
+
+void sendPostReq(String request){
+  client2.beginRequest();
+  client2.post("/data");
+  client2.sendHeader("Host", "172.20.10.2");
+  client2.sendHeader("Accept", "*/*");
+  client2.sendHeader(HTTP_HEADER_USER_AGENT, "Arduino-WiFiNINA/1.0");
+  client2.sendHeader(HTTP_HEADER_CONTENT_TYPE, "application/json");
+  client2.sendHeader("Content-Length", myReq.length());
+  client2.sendBasicAuth("admin", "password");
+  client2.beginBody();
+  client2.print(myReq);
+  client2.endRequest();
+}
+
+String getAlert(){
+  client2.beginRequest();
+  client2.get("/data/0");
+  client2.sendHeader("Host", "172.20.10.2");
+  client2.sendHeader("Accept", "*/*");
+  client2.sendHeader(HTTP_HEADER_USER_AGENT, "Arduino-WiFiNINA/1.0");
+  client2.sendHeader(HTTP_HEADER_CONTENT_TYPE, "application/json");
+  client2.sendBasicAuth("admin", "password");
+  client2.endRequest();
+  String response = client2.responseBody();
+  Serial.print("Response: ");
+  Serial.println(response);
+  return response;
+}
+
+void printAlert(String alert){
+  if (alert.indexOf("No") != -1) {
+    lcd.print("No alert");
+  } else if (alert.indexOf("High") != -1) {
+    lcd.print("High HR!");
+  } else if (alert.indexOf("Low") != -1) {
+    lcd.print("Low HR!");
+  }
+}
+
+uint8_t readHRValue(){
+  // uint8_t rateValue;
+  // heartrate.getValue(heartratePin);
+  // rateValue = heartrate.getRate();
+  // return rateValue;
+  return random(10, 200);
+}
+
+void processHRValue(uint8_t value){
+    readsCounter++;
+    lastHRValue = value;
+    HRValuesBuffer[bufferIndex++] = value;
+    if (bufferIndex >= (sizeof(HRValuesBuffer)/sizeof(HRValuesBuffer[0]))){ 
+      bufferIndex = 0;
+    }
+}
+
+uint8_t averageHRValue(){
+    int len = (sizeof(HRValuesBuffer)/sizeof(HRValuesBuffer[0]));
+    int sum = 0;
+    for (int i = 0; i < len; i++) {
+      sum += HRValuesBuffer[i];
+    }
+    return sum / len;
+}
+
+void printWifiStatus() {
+   Serial.print("SSID: ");
+   Serial.println(WiFi.SSID());
+   IPAddress ip = WiFi.localIP();
+   Serial.print("IP Address: ");
+   Serial.println(ip);
+   long rssi = WiFi.RSSI();
+   Serial.print("signal strength (RSSI):");
+   Serial.print(rssi);
+   Serial.println(" dBm");
+}
